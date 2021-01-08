@@ -21,13 +21,20 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.collect.ImmutableList;
 import com.netflix.spinnaker.clouddriver.model.JobState;
 import com.netflix.spinnaker.clouddriver.model.JobStatus;
+import io.kubernetes.client.openapi.models.V1ContainerStateTerminated;
+import io.kubernetes.client.openapi.models.V1ContainerStatus;
 import io.kubernetes.client.openapi.models.V1Job;
 import io.kubernetes.client.openapi.models.V1JobCondition;
 import io.kubernetes.client.openapi.models.V1JobSpec;
 import io.kubernetes.client.openapi.models.V1JobStatus;
 import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1PodStatus;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import lombok.AllArgsConstructor;
 import lombok.Data;
 
 @Data
@@ -64,6 +71,45 @@ public class KubernetesJobStatus implements JobStatus {
     details.put("signal", this.signal != null ? this.signal.toString() : "");
     details.put("message", this.message != null ? this.message : "");
     details.put("reason", this.reason != null ? this.reason : "");
+
+    // find the execution details of the first pod that has failed. The Job completion details will
+    // be set to this pod's
+    // execution context if this pod terminated with a non-zero exit code
+    for (PodStatus pod : pods) {
+      V1PodStatus podStatus = pod.getStatus();
+      if (podStatus != null) {
+        ContainerExecutionDetails containerExecutionDetails = new ContainerExecutionDetails();
+        // App containers only run when all the init containers are successful. Otherwise, the app
+        // container state
+        // will be 'waiting'. Therefore, we first check init containers failures
+        Optional<ContainerExecutionDetails> failedInitContainerDetails =
+            getFailedContainerDetails(podStatus.getInitContainerStatuses());
+        if (failedInitContainerDetails.isPresent()) {
+          containerExecutionDetails = failedInitContainerDetails.get();
+        } else {
+          Optional<ContainerExecutionDetails> failedContainerDetails =
+              getFailedContainerDetails(podStatus.getContainerStatuses());
+          if (failedContainerDetails.isPresent()) {
+            containerExecutionDetails = failedContainerDetails.get();
+          }
+        }
+
+        details.put(
+            "exitCode",
+            this.exitCode != null
+                ? this.exitCode.toString()
+                : containerExecutionDetails.getExitCode());
+        details.put(
+            "signal",
+            this.signal != null ? this.signal.toString() : containerExecutionDetails.getSignal());
+        details.put(
+            "message",
+            this.message != null ? this.message : containerExecutionDetails.getMessage());
+        details.put(
+            "reason", this.reason != null ? this.reason : containerExecutionDetails.getReason());
+        break;
+      }
+    }
     return details;
   }
 
@@ -90,6 +136,23 @@ public class KubernetesJobStatus implements JobStatus {
         && "True".equalsIgnoreCase(condition.getStatus());
   }
 
+  private Optional<ContainerExecutionDetails> getFailedContainerDetails(
+      List<V1ContainerStatus> containerStatuses) {
+    /**
+     * check each container's status. If any container exists with a non-zero exit code, then that
+     * indicates it has failed. Stop processing at that point.
+     */
+    return Optional.ofNullable(containerStatuses).orElseGet(Collections::emptyList).stream()
+        .filter(
+            status ->
+                status.getState() != null
+                    && status.getState().getTerminated() != null
+                    && status.getState().getTerminated().getExitCode() != null
+                    && status.getState().getTerminated().getExitCode() != 0)
+        .findFirst()
+        .map(status -> new ContainerExecutionDetails(status.getState().getTerminated()));
+  }
+
   @Data
   public static class PodStatus {
     private String name;
@@ -98,6 +161,35 @@ public class KubernetesJobStatus implements JobStatus {
     public PodStatus(V1Pod pod) {
       this.name = pod.getMetadata().getName();
       this.status = pod.getStatus();
+    }
+  }
+
+  @Data
+  @AllArgsConstructor
+  public static class ContainerExecutionDetails {
+    private String message;
+    private String reason;
+    private String exitCode;
+    private String signal;
+
+    public ContainerExecutionDetails() {
+      this.message = "";
+      this.reason = "";
+      this.exitCode = "";
+      this.signal = "";
+    }
+
+    public ContainerExecutionDetails(V1ContainerStateTerminated terminatedContainerState) {
+      this.message = terminatedContainerState.getMessage();
+      this.reason = terminatedContainerState.getReason();
+      this.exitCode =
+          terminatedContainerState.getExitCode() != null
+              ? terminatedContainerState.getExitCode().toString()
+              : "";
+      this.signal =
+          terminatedContainerState.getSignal() != null
+              ? terminatedContainerState.getSignal().toString()
+              : "";
     }
   }
 }

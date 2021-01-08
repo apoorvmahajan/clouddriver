@@ -26,6 +26,7 @@ import com.netflix.spinnaker.clouddriver.kubernetes.model.KubernetesJobStatus;
 import com.netflix.spinnaker.clouddriver.kubernetes.security.KubernetesCredentials;
 import com.netflix.spinnaker.clouddriver.kubernetes.security.KubernetesSelectorList;
 import com.netflix.spinnaker.clouddriver.model.JobProvider;
+import com.netflix.spinnaker.clouddriver.model.JobState;
 import com.netflix.spinnaker.clouddriver.security.AccountCredentialsProvider;
 import io.kubernetes.client.openapi.models.V1Job;
 import io.kubernetes.client.openapi.models.V1Pod;
@@ -82,6 +83,12 @@ public class KubernetesJobProvider implements JobProvider<KubernetesJobStatus> {
                 })
             .collect(Collectors.toList()));
 
+    if (jobStatus.getJobState() == JobState.Failed) {
+      throw new KubernetesJobFailedException(
+          "Kubernetes Job Failed. Stacktrace: "
+              + jobStatus.getCompletionDetails().getOrDefault("message", ""));
+    }
+
     return jobStatus;
   }
 
@@ -115,5 +122,15 @@ public class KubernetesJobProvider implements JobProvider<KubernetesJobStatus> {
     return Optional.ofNullable(manifestProvider.getManifest(account, location, id, false))
         .map(KubernetesManifestContainer::getManifest)
         .map(m -> KubernetesCacheDataConverter.getResource(m, V1Job.class));
+  }
+
+  public static class KubernetesJobFailedException extends RuntimeException {
+    public KubernetesJobFailedException(String message) {
+      super(message);
+    }
+
+    public KubernetesJobFailedException(String message, Throwable cause) {
+      super(message, cause);
+    }
   }
 }
