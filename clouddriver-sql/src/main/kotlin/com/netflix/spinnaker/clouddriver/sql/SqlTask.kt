@@ -26,6 +26,7 @@ import com.netflix.spinnaker.clouddriver.data.task.TaskState
 
 import java.util.concurrent.atomic.AtomicBoolean
 import org.slf4j.LoggerFactory
+import javax.annotation.Nullable
 
 /**
  * TOOD(rz): Refactor 'river to not use an active record pattern. This sucks.
@@ -127,7 +128,7 @@ class SqlTask(
     return taskOutputs
   }
 
-  override fun updateOutput(manifestName: String, phase: String, stdOut: String, stdError: String) {
+  override fun updateOutput(manifestName: String, phase: String, stdOut: String?, stdError: String?) {
     this.dirty.set(true)
     repository.updateOutput( TaskDisplayOutput(manifestName, phase, stdOut, stdError),this)
     log.debug("Updated output for task {} for manifest {} for phase {} ", id, manifestName, phase)

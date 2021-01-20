@@ -202,7 +202,7 @@ class SqlTaskRepository(
     }
   }
 
-  private fun addToOutput(ctx: DSLContext, id: String, taskId: String, manifestName: String, phase: String, stdOut: String, stdError: String) {
+  private fun addToOutput(ctx: DSLContext, id: String, taskId: String, manifestName: String, phase: String, stdOut: String?, stdError: String?) {
     ctx
       .insertInto(
         taskOutputsTable,

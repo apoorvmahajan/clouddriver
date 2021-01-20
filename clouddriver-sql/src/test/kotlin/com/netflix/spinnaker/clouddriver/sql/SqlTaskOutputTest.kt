@@ -37,6 +37,16 @@ class SqlTaskOutputTest : JUnit5Minutests {
     }
 
     context("task output") {
+      test("verify if the task outputs with null/empty values can be stored and retrieved successfully from the db") {
+        val t1 = subject.create("TEST", "Test Status")
+
+        t1.updateOutput("some-manifest", "TEST", null, "")
+        assert(t1.outputs[0].manifest == "some-manifest")
+        assert(t1.outputs[0].phase == "TEST")
+        assert(t1.outputs[0].stdOut.isNullOrBlank())
+        assert(t1.outputs[0].stdError.isNullOrBlank())
+      }
+
       test("verify if the task outputs can be stored and retrieved successfully from the db") {
         val t1 = subject.create("TEST", "Test Status")
 
@@ -44,7 +54,7 @@ class SqlTaskOutputTest : JUnit5Minutests {
         assert(t1.outputs[0].manifest == "some-manifest")
         assert(t1.outputs[0].phase == "TEST")
         assert(t1.outputs[0].stdOut == "output")
-        assert(t1.outputs[0].stdError == "")
+        assert(t1.outputs[0].stdError.isNullOrBlank())
       }
 
       test("task has outputs from multiple manifests") {
@@ -60,7 +70,7 @@ class SqlTaskOutputTest : JUnit5Minutests {
         assert(t1.outputs[1].manifest == "some-manifest-2")
         assert(t1.outputs[1].phase == "Deploy")
         assert(t1.outputs[1].stdOut == "other output")
-        assert(t1.outputs[1].stdError == "")
+        assert(t1.outputs[1].stdError.isNullOrBlank())
       }
 
       test("multiple tasks with only one task having outputs from multiple manifests") {
@@ -73,11 +83,11 @@ class SqlTaskOutputTest : JUnit5Minutests {
         assert(t1.outputs[0].manifest == "some-manifest")
         assert(t1.outputs[0].phase == "TEST")
         assert(t1.outputs[0].stdOut == "output")
-        assert(t1.outputs[0].stdError == "")
+        assert(t1.outputs[0].stdError.isNullOrBlank())
         assert(t1.outputs[1].manifest == "some-manifest-2")
         assert(t1.outputs[1].phase == "Deploy")
         assert(t1.outputs[1].stdOut == "other output")
-        assert(t1.outputs[1].stdError == "")
+        assert(t1.outputs[1].stdError.isNullOrBlank())
         assert(t2.outputs.isEmpty())
       }
     }

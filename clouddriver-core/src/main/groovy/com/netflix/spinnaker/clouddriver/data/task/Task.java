@@ -3,6 +3,7 @@ package com.netflix.spinnaker.clouddriver.data.task;
 import java.util.List;
 import java.util.Set;
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
 /**
  * This interface represents the state of a given execution. Implementations must allow for updating
@@ -103,7 +104,8 @@ public interface Task {
    * @param stdOut - captures std output
    * @param stdError - captures errors
    */
-  void updateOutput(String manifest, String phase, String stdOut, String stdError);
+  void updateOutput(
+      String manifest, String phase, @Nullable String stdOut, @Nullable String stdError);
 
   /** @return */
   List<? extends TaskOutput> getOutputs();

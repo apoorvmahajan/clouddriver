@@ -211,8 +211,7 @@ public class KubernetesDeployManifestOperation implements AtomicOperation<Operat
         OperationResult manifestOperationResult =
             deployer.deploy(credentials, manifest, strategy.getDeployStrategy());
         // deploy returns a new OperationsResult with the manifest added to it - so at this point,
-        // its
-        // size will be 1
+        // its size will be 1
         if (manifestOperationResult.getManifests().size() == 1) {
           Optional<KubernetesManifest> returnedManifest =
               manifestOperationResult.getManifests().stream().findFirst();
@@ -222,12 +221,12 @@ public class KubernetesDeployManifestOperation implements AtomicOperation<Operat
                       .updateOutput(
                           kubernetesManifest.getFullResourceName(),
                           OP_NAME,
-                          kubernetesManifest.getOutput().orElse(null),
-                          kubernetesManifest.getErrorLogs().orElse(null)));
+                          kubernetesManifest.getOutput().orElse(""),
+                          kubernetesManifest.getErrorLogs().orElse("")));
         }
         result.merge(manifestOperationResult);
       } catch (Exception e) {
-        getTask().updateOutput(manifest.getFullResourceName(), OP_NAME, null, e.toString());
+        getTask().updateOutput(manifest.getFullResourceName(), OP_NAME, "", e.toString());
         throw e;
       }
 
