@@ -1,14 +1,13 @@
-# Job has failed
+# Job has succeeded
 status:
+  completionTime: "2020-01-31T19:44:10Z"
   conditions:
-    - lastProbeTime: "2020-01-31T19:13:13Z"
-      lastTransitionTime: "2020-01-31T19:13:13Z"
-      message: Job has reached the specified backoff limit
-      reason: BackoffLimitExceeded
+    - lastProbeTime: "2020-01-31T19:44:10Z"
+      lastTransitionTime: "2020-01-31T19:44:10Z"
       status: "True"
-      type: Failed
-  failed: 2
-  startTime: "2020-01-31T19:13:02Z"
+      type: Complete
+  startTime: "2020-01-31T19:43:33Z"
+  succeeded: 1
   containerStatuses:
     - containerID: "some-container-id"
       image: "some-image:test"
@@ -37,9 +36,9 @@ status:
         terminated:
           containerID: "some-init-container-id"
           exitCode: 0
-          finishedAt: "2020-01-31T13:56:20Z"
+          finishedAt: "2020-01-31T19:12:20Z"
           reason: Completed
-          startedAt: "2020-01-31T23:53:20Z"
+          startedAt: "2020-01-31T19:12:20Z"
   phase: Failed
   podIP: "1.1.1.1"
   qosClass: BestEffort

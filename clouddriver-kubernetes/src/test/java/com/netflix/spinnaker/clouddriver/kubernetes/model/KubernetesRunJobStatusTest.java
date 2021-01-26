@@ -32,10 +32,110 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 class KubernetesRunJobStatusTest {
+  @Test
+  void testCompletionDetailsForSuccessfulJobCompletion() {
+    KubernetesJobStatus kubernetesJobStatus = getKubernetesJobStatus("successful-job.yml");
+    Map<String, String> result = kubernetesJobStatus.getCompletionDetails();
+    assertFalse(result.isEmpty());
+    assertThat(result.get("message")).isNullOrEmpty();
+    assertThat(result.get("exitCode")).isNullOrEmpty();
+    assertThat(result.get("signal")).isNullOrEmpty();
+    assertThat(result.get("reason")).isNullOrEmpty();
+    assertThat(result.get("summary")).isNullOrEmpty();
+  }
+
+  @Test
+  void testJobFailureDetailsForJobWithSinglePodWithFailedInitContainers() {
+    KubernetesJobStatus jobStatus = getKubernetesJobStatus("failed-job-init-container-error.yml");
+    jobStatus.jobFailureDetails();
+    assertThat(jobStatus.getMessage()).isEqualTo("Job has reached the specified backoff limit");
+    assertThat(jobStatus.getReason()).isEqualTo("BackoffLimitExceeded");
+    assertThat(jobStatus.getPods().size()).isEqualTo(1);
+    KubernetesJobStatus.PodStatus podStatus = jobStatus.getPods().get(0);
+    assertThat(podStatus.getContainerExecutionDetails().size()).isEqualTo(2);
+    Optional<KubernetesJobStatus.ContainerExecutionDetails> failedContainer =
+        podStatus.getContainerExecutionDetails().stream()
+            .filter(c -> c.getName().equals("init-myservice"))
+            .findFirst();
+
+    assertFalse(failedContainer.isEmpty());
+    assertThat(failedContainer.get().getLogs()).isEqualTo("foo");
+    assertThat(failedContainer.get().getStatus()).isEqualTo("Error");
+    assertThat(failedContainer.get().getExitCode()).isEqualTo("1");
+
+    Map<String, String> result = jobStatus.getCompletionDetails();
+    assertFalse(result.isEmpty());
+    assertThat(result.get("summary"))
+        .isEqualTo(
+            "Pod: hello had errors.\n"
+                + "  Container: init-myservice exited with code: 1.\n"
+                + " Status: Error.\n"
+                + " Logs: foo");
+  }
+
+  @Test
+  void testJobFailureDetailsForJobWithSinglePodWithFailedAppContainers() {
+    KubernetesJobStatus jobStatus = getKubernetesJobStatus("failed-job.yml");
+    jobStatus.jobFailureDetails();
+    assertThat(jobStatus.getMessage()).isEqualTo("Job has reached the specified backoff limit");
+    assertThat(jobStatus.getReason()).isEqualTo("BackoffLimitExceeded");
+    assertThat(jobStatus.getPods().size()).isEqualTo(1);
+    KubernetesJobStatus.PodStatus podStatus = jobStatus.getPods().get(0);
+    assertThat(podStatus.getContainerExecutionDetails().size()).isEqualTo(2);
+    Optional<KubernetesJobStatus.ContainerExecutionDetails> failedContainer =
+        podStatus.getContainerExecutionDetails().stream()
+            .filter(c -> c.getName().equals("some-container-name"))
+            .findFirst();
+
+    assertFalse(failedContainer.isEmpty());
+    assertThat(failedContainer.get().getLogs())
+        .isEqualTo(
+            "Failed to download the file: foo.\n"
+                + "GET Request failed with status code', 404, 'Expected', <HTTPStatus.OK: 200>)\n");
+    assertThat(failedContainer.get().getStatus()).isEqualTo("Error");
+    assertThat(failedContainer.get().getExitCode()).isEqualTo("1");
+    Map<String, String> result = jobStatus.getCompletionDetails();
+    assertFalse(result.isEmpty());
+    assertThat(result.get("summary"))
+        .isEqualTo(
+            "Pod: hello had errors.\n"
+                + "  Container: some-container-name exited with code: 1.\n"
+                + " Status: Error.\n"
+                + " Logs: Failed to download the file: foo.\n"
+                + "GET Request failed with status code', 404, 'Expected', <HTTPStatus.OK: 200>)\n");
+  }
+
+  @Test
+  void testJobFailureDetailsForJobFailureOnlyWithNoContainerLogs() {
+    KubernetesManifest testManifest =
+        Yaml.loadAs(getResource("runjob-deadline-exceeded.yml"), KubernetesManifest.class);
+
+    V1Job job = KubernetesCacheDataConverter.getResource(testManifest, V1Job.class);
+    KubernetesJobStatus jobStatus = new KubernetesJobStatus(job, "mock-account");
+
+    List<KubernetesManifest> pods = ImmutableList.of(testManifest);
+    jobStatus.setPods(
+        pods.stream()
+            .map(
+                p -> {
+                  V1Pod pod = KubernetesCacheDataConverter.getResource(p, V1Pod.class);
+                  return new KubernetesJobStatus.PodStatus(pod);
+                })
+            .collect(Collectors.toList()));
+
+    jobStatus.jobFailureDetails();
+    assertThat(jobStatus.getMessage()).isEqualTo("Job was active longer than specified deadline");
+    assertThat(jobStatus.getReason()).isEqualTo("DeadlineExceeded");
+
+    Map<String, String> result = jobStatus.getCompletionDetails();
+    assertFalse(result.isEmpty());
+    assertThat(result.get("summary")).isNullOrEmpty();
+  }
 
   private String getResource(String name) {
     try {
@@ -66,42 +166,5 @@ class KubernetesRunJobStatusTest {
                 })
             .collect(Collectors.toList()));
     return kubernetesJobStatus;
-  }
-
-  @Test
-  void testCompletionDetailsForFailedAppContainer() {
-    KubernetesJobStatus kubernetesJobStatus = getKubernetesJobStatus("failed-job.yml");
-    Map<String, String> result = kubernetesJobStatus.getCompletionDetails();
-    assertFalse(result.isEmpty());
-    assertThat(result.get("message"))
-        .isEqualTo(
-            "Failed to download the file: foo.\n"
-                + "GET Request failed with status code', 404, 'Expected', <HTTPStatus.OK: 200>)\n");
-    assertThat(result.get("exitCode")).isEqualTo("1");
-    assertThat(result.get("signal")).isEmpty();
-    assertThat(result.get("reason")).isEqualTo("Error");
-  }
-
-  @Test
-  void testCompletionDetailsForFailedInitContainer() {
-    KubernetesJobStatus kubernetesJobStatus =
-        getKubernetesJobStatus("failed-job-init-container-error.yml");
-    Map<String, String> result = kubernetesJobStatus.getCompletionDetails();
-    assertFalse(result.isEmpty());
-    assertThat(result.get("message")).isEqualTo("foo");
-    assertThat(result.get("exitCode")).isEqualTo("1");
-    assertThat(result.get("signal")).isEmpty();
-    assertThat(result.get("reason")).isEqualTo("Error");
-  }
-
-  @Test
-  void testCompletionDetailsForSuccessfulJobCompletion() {
-    KubernetesJobStatus kubernetesJobStatus = getKubernetesJobStatus("successful-job.yml");
-    Map<String, String> result = kubernetesJobStatus.getCompletionDetails();
-    assertFalse(result.isEmpty());
-    assertThat(result.get("message")).isNullOrEmpty();
-    assertThat(result.get("exitCode")).isNullOrEmpty();
-    assertThat(result.get("signal")).isNullOrEmpty();
-    assertThat(result.get("reason")).isNullOrEmpty();
   }
 }

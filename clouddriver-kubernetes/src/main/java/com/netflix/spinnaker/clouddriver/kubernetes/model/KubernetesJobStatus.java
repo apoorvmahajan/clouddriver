@@ -21,7 +21,9 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.collect.ImmutableList;
 import com.netflix.spinnaker.clouddriver.model.JobState;
 import com.netflix.spinnaker.clouddriver.model.JobStatus;
+import io.kubernetes.client.openapi.models.V1ContainerState;
 import io.kubernetes.client.openapi.models.V1ContainerStateTerminated;
+import io.kubernetes.client.openapi.models.V1ContainerStateWaiting;
 import io.kubernetes.client.openapi.models.V1ContainerStatus;
 import io.kubernetes.client.openapi.models.V1Job;
 import io.kubernetes.client.openapi.models.V1JobCondition;
@@ -29,11 +31,13 @@ import io.kubernetes.client.openapi.models.V1JobSpec;
 import io.kubernetes.client.openapi.models.V1JobStatus;
 import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1PodStatus;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
@@ -52,6 +56,7 @@ public class KubernetesJobStatus implements JobStatus {
   String reason;
   Integer exitCode;
   Integer signal;
+  String summary;
   String logs;
   @JsonIgnore V1Job job;
   List<PodStatus> pods;
@@ -71,45 +76,7 @@ public class KubernetesJobStatus implements JobStatus {
     details.put("signal", this.signal != null ? this.signal.toString() : "");
     details.put("message", this.message != null ? this.message : "");
     details.put("reason", this.reason != null ? this.reason : "");
-
-    // find the execution details of the first pod that has failed. The Job completion details will
-    // be set to this pod's
-    // execution context if this pod terminated with a non-zero exit code
-    for (PodStatus pod : pods) {
-      V1PodStatus podStatus = pod.getStatus();
-      if (podStatus != null) {
-        ContainerExecutionDetails containerExecutionDetails = new ContainerExecutionDetails();
-        // App containers only run when all the init containers are successful. Otherwise, the app
-        // container state
-        // will be 'waiting'. Therefore, we first check init containers failures
-        Optional<ContainerExecutionDetails> failedInitContainerDetails =
-            getFailedContainerDetails(podStatus.getInitContainerStatuses());
-        if (failedInitContainerDetails.isPresent()) {
-          containerExecutionDetails = failedInitContainerDetails.get();
-        } else {
-          Optional<ContainerExecutionDetails> failedContainerDetails =
-              getFailedContainerDetails(podStatus.getContainerStatuses());
-          if (failedContainerDetails.isPresent()) {
-            containerExecutionDetails = failedContainerDetails.get();
-          }
-        }
-
-        details.put(
-            "exitCode",
-            this.exitCode != null
-                ? this.exitCode.toString()
-                : containerExecutionDetails.getExitCode());
-        details.put(
-            "signal",
-            this.signal != null ? this.signal.toString() : containerExecutionDetails.getSignal());
-        details.put(
-            "message",
-            this.message != null ? this.message : containerExecutionDetails.getMessage());
-        details.put(
-            "reason", this.reason != null ? this.reason : containerExecutionDetails.getReason());
-        break;
-      }
-    }
+    details.put("summary", this.summary != null ? this.summary : "");
     return details;
   }
 
@@ -123,9 +90,7 @@ public class KubernetesJobStatus implements JobStatus {
     int succeeded = Optional.of(status).map(V1JobStatus::getSucceeded).orElse(0);
 
     if (succeeded < completions) {
-      List<V1JobCondition> conditions = status.getConditions();
-      conditions = conditions != null ? conditions : ImmutableList.of();
-      Optional<V1JobCondition> condition = conditions.stream().filter(this::jobFailed).findFirst();
+      Optional<V1JobCondition> condition = getFailedJobCondition(status);
       return condition.isPresent() ? JobState.Failed : JobState.Running;
     }
     return JobState.Succeeded;
@@ -136,60 +101,134 @@ public class KubernetesJobStatus implements JobStatus {
         && "True".equalsIgnoreCase(condition.getStatus());
   }
 
-  private Optional<ContainerExecutionDetails> getFailedContainerDetails(
-      List<V1ContainerStatus> containerStatuses) {
-    /**
-     * check each container's status. If any container exists with a non-zero exit code, then that
-     * indicates it has failed. Stop processing at that point.
-     */
-    return Optional.ofNullable(containerStatuses).orElseGet(Collections::emptyList).stream()
-        .filter(
-            status ->
-                status.getState() != null
-                    && status.getState().getTerminated() != null
-                    && status.getState().getTerminated().getExitCode() != null
-                    && status.getState().getTerminated().getExitCode() != 0)
-        .findFirst()
-        .map(status -> new ContainerExecutionDetails(status.getState().getTerminated()));
+  private Optional<V1JobCondition> getFailedJobCondition(V1JobStatus status) {
+    List<V1JobCondition> conditions = status.getConditions();
+    conditions = conditions != null ? conditions : ImmutableList.of();
+    return conditions.stream().filter(this::jobFailed).findFirst();
+  }
+
+  public void jobFailureDetails() {
+    V1JobStatus status = this.job.getStatus();
+    if (status != null) {
+      Optional<V1JobCondition> condition = getFailedJobCondition(status);
+      if (condition.isPresent()) {
+        this.setMessage(condition.get().getMessage());
+        this.setReason(condition.get().getReason());
+      }
+      // save all container outputs
+      this.getPods().forEach(KubernetesJobStatus.PodStatus::updatePodStatus);
+
+      // construct a meaningful message to explain why the job failed
+      for (PodStatus pod : pods) {
+        Optional<ContainerExecutionDetails> failedContainerDetails =
+            pod.getContainerExecutionDetails().stream()
+                .filter(
+                    containerExecutionDetails ->
+                        containerExecutionDetails
+                                .getState()
+                                .equals(V1ContainerState.SERIALIZED_NAME_TERMINATED)
+                            && containerExecutionDetails.getExitCode() != null
+                            && !containerExecutionDetails.getExitCode().equals("0"))
+                .findFirst();
+
+        if (failedContainerDetails.isEmpty()) {
+          failedContainerDetails =
+              pod.getContainerExecutionDetails().stream()
+                  .filter(
+                      containerExecutionDetails ->
+                          containerExecutionDetails
+                              .getState()
+                              .equals(V1ContainerState.SERIALIZED_NAME_WAITING))
+                  .findFirst();
+        }
+
+        if (failedContainerDetails.isPresent()) {
+          ContainerExecutionDetails failedContainer = failedContainerDetails.get();
+          this.summary =
+              "Pod: "
+                  + pod.getName()
+                  + " had errors.\n  Container: "
+                  + failedContainer.getName()
+                  + " exited with code: "
+                  + failedContainer.getExitCode()
+                  + ".\n Status: "
+                  + failedContainer.getStatus()
+                  + ".\n Logs: "
+                  + failedContainer.getLogs();
+          break;
+        }
+      }
+    }
   }
 
   @Data
   public static class PodStatus {
     private String name;
     private V1PodStatus status;
+    private List<ContainerExecutionDetails> containerExecutionDetails;
 
     public PodStatus(V1Pod pod) {
       this.name = pod.getMetadata().getName();
       this.status = pod.getStatus();
+      this.containerExecutionDetails = new ArrayList<>();
+    }
+
+    public void updatePodStatus() {
+      if (this.status != null) {
+        this.containerExecutionDetails.addAll(
+            getContainerDetails(this.status.getInitContainerStatuses()));
+        this.containerExecutionDetails.addAll(
+            getContainerDetails(this.status.getContainerStatuses()));
+      }
+    }
+
+    private static List<ContainerExecutionDetails> getContainerDetails(
+        List<V1ContainerStatus> containerStatuses) {
+      return Optional.ofNullable(containerStatuses).orElseGet(Collections::emptyList).stream()
+          .filter(status -> status.getState() != null)
+          .map(status -> new ContainerExecutionDetails(status.getName(), status.getState()))
+          .collect(Collectors.toList());
     }
   }
 
   @Data
   @AllArgsConstructor
   public static class ContainerExecutionDetails {
-    private String message;
-    private String reason;
+    private String name;
+    private String logs;
+    private String status;
     private String exitCode;
-    private String signal;
+    private String state;
 
     public ContainerExecutionDetails() {
-      this.message = "";
-      this.reason = "";
+      this.name = "";
+      this.logs = "";
+      this.status = "";
       this.exitCode = "";
-      this.signal = "";
+      this.state = V1ContainerState.SERIALIZED_NAME_RUNNING;
     }
 
-    public ContainerExecutionDetails(V1ContainerStateTerminated terminatedContainerState) {
-      this.message = terminatedContainerState.getMessage();
-      this.reason = terminatedContainerState.getReason();
-      this.exitCode =
-          terminatedContainerState.getExitCode() != null
-              ? terminatedContainerState.getExitCode().toString()
-              : "";
-      this.signal =
-          terminatedContainerState.getSignal() != null
-              ? terminatedContainerState.getSignal().toString()
-              : "";
+    public ContainerExecutionDetails(String name, V1ContainerState containerState) {
+      this();
+
+      this.name = name;
+      if (containerState.getTerminated() != null) {
+        V1ContainerStateTerminated terminatedContainerState = containerState.getTerminated();
+        this.logs = terminatedContainerState.getMessage();
+        this.status = terminatedContainerState.getReason();
+        this.exitCode =
+            terminatedContainerState.getExitCode() != null
+                ? terminatedContainerState.getExitCode().toString()
+                : "";
+        this.state = V1ContainerState.SERIALIZED_NAME_TERMINATED;
+      } else if (containerState.getWaiting() != null) {
+        V1ContainerStateWaiting waitingContainerState = containerState.getWaiting();
+        this.logs = waitingContainerState.getMessage();
+        this.status = waitingContainerState.getReason();
+        this.state = V1ContainerState.SERIALIZED_NAME_WAITING;
+      } else {
+        this.logs = "container is still in running state";
+      }
     }
   }
 }
